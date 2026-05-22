@@ -1,0 +1,55 @@
+# Copy this file to .github/workflows/release.yml in your app's repo
+# and adjust the inputs in the `with:` block.
+#
+# See ../docs/ONBOARDING.md for the full checklist.
+
+name: Release
+
+on:
+  # Mode A: Manual draft kickoff
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (e.g. 1.4.2). Default = computed from tags.'
+        required: false
+        type: string
+
+  # Mode B: Scheduled with human approval
+  # Sat 06:00 UTC = Fri 11pm PDT (10pm PST in winter)
+  schedule:
+    - cron: '0 6 * * 6'
+
+  # Mode C: Fully automated on tag push
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write       # Required to create releases + push version-stamp commits
+  id-token: write       # Required for Azure OIDC federation
+  pull-requests: read   # Required for changelog generation
+
+jobs:
+  release:
+    uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/workflows/win-app-release.yml@v1
+    with:
+      # --- REQUIRED: customize for your app ---
+      app_name:           MyApp
+      publish_command: |
+        dotnet publish src/MyApp -c Release -r win-x64 -p:Platform=x64 `
+                                 -p:WindowsAppSDKSelfContained=true `
+                                 -p:SelfContained=true `
+                                 -p:PublishTrimmed=false
+      publish_output_dir: src/MyApp/bin/x64/Release/net8.0-windows10.0.26100.0/win-x64/publish
+      inno_script:        installer/MyApp.iss
+      primary_exe:        MyApp.exe
+      installer_glob:     dist/MyApp-Setup-*.exe
+
+      # --- OPTIONAL ---
+      web_bundle:         false   # true if your build needs `npm run build` (e.g. WordMD)
+      version:            ${{ inputs.version }}
+
+      # --- DON'T TOUCH unless you know what you're doing ---
+      release_mode: ${{ github.event_name == 'push' && 'publish' || 'draft' }}
+
+    secrets: inherit  # Pulls AZURE_*, TRUSTED_SIGNING_* from org-level secrets

@@ -16,3 +16,6 @@ desktop.ini
 secrets.*
 scratch/
 tmp/
+
+# Private operational runbooks (process detail we don't want public)
+docs/private/
