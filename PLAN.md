@@ -203,7 +203,7 @@ in one command."
 | 2 | Toolkit repo visibility | **Public** (no secrets in repo; simplifies reusable-workflow consumption) |
 | 3 | Signing provider | **Azure Trusted Signing** |
 | 4 | Schedule day/time | **`0 6 * * 6`** — Saturday 06:00 UTC = **Friday 11pm PDT** (drifts to 10pm PST in winter) |
-| 5 | Version source of truth | **Git tags `vX.Y.Z`**. Workflow stamps `.iss` + `.csproj` + installer filename at build time. Mode C fails fast if HEAD isn't tagged. Mode A drafts use `<last-tag>-rc.<commits-since>+<sha>` when no explicit version supplied. |
+| 5 | Version source of truth | **Git tags `vX.Y.Z`**. Workflow stamps `.iss` + `.csproj` + installer filename at build time. Mode C fails fast if HEAD isn't tagged. Modes A/B compute next-patch from the last final tag (`git tag --list 'v*' \| grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'`). Pre-release tags exist but don't bump the baseline. Explicit `inputs.version` override always wins. |
 | 6 | Conventional commits | **Encouraged, never enforced.** Workflow parses `feat:` `fix:` `perf:` `docs:` `refactor:` `test:` `build:` `ci:` `chore:` (and `!` for breaking) and auto-groups release notes into Features / Fixes / Performance / Docs / Other. Un-prefixed commits land under Other. No bot rejects PRs. |
 | 7 | Build skip-week mechanism | Just don't publish the draft. Cron exits silently if no commits since last tag. |
 | 8 | Rollback model | Yank-via-workflow (Flavor A) + forward-fix philosophy (Flavor B). See §13. |

@@ -1,5 +1,5 @@
 name: 'Generate release notes'
-description: 'Builds a Markdown changelog grouped by Conventional Commits prefix, from commits + merged PRs since the last tag.'
+description: 'Builds a Markdown changelog grouped by Conventional Commits prefix from commits since the last tag.'
 
 inputs:
   version:
@@ -31,7 +31,11 @@ runs:
       run: |
         set -euo pipefail
 
-        OUT="$RUNNER_TEMP/release-notes-${VERSION}.md"
+        # On windows-latest, $RUNNER_TEMP is a Windows path (C:\...). Git Bash
+        # mostly handles this, but converting to a Unix-style path avoids edge
+        # cases when redirecting / sourcing.
+        OUT_DIR="$(cygpath -u "$RUNNER_TEMP" 2>/dev/null || printf '%s' "$RUNNER_TEMP")"
+        OUT="$OUT_DIR/release-notes-${VERSION}.md"
 
         # Range to diff: from LAST_TAG (if any) to HEAD.
         if [ -n "$LAST_TAG" ]; then

@@ -43,6 +43,11 @@ on:
         required: true
         type: string
         description: 'Filename of the main exe to sign, e.g. "WordMD.exe".'
+      csproj_path:
+        required: false
+        type: string
+        default: ''
+        description: 'Optional path to a specific .csproj for <Version> stamping. Empty = stamp all .csproj recursively (broad, can touch tests/tools).'
       installer_glob:
         required: true
         type: string
@@ -91,10 +96,22 @@ jobs:
         shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
 
-          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          # --- Validate release_mode early. A typo here would silently publish.
+          case "$INPUT_RELEASE_MODE" in
+            draft|publish) ;;
+            *)
+              echo "::error::Invalid release_mode '$INPUT_RELEASE_MODE'. Must be exactly 'draft' or 'publish'."
+              exit 1
+              ;;
+          esac
+
+          # --- Last tag for next-patch baseline: ONLY final v X.Y.Z tags.
+          # Pre-release tags (vX.Y.Z-rc.N) exist but don't bump the baseline.
+          LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
           echo "last_tag=${LAST_TAG}" >> "$GITHUB_OUTPUT"
 
           # --- Schedule trigger: short-circuit if no commits since last tag.
@@ -130,9 +147,12 @@ jobs:
             echo "::notice::Version source: next-patch from ${LAST_TAG:-v0.0.0} -> ${VERSION}"
           fi
 
-          # Sanity: must look like semver.
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]]; then
-            echo "::error::Computed version '${VERSION}' doesn't look like semver."
+          # Sanity: must be a final X.Y.Z (no prerelease suffix). Prereleases
+          # aren't supported by this workflow yet; if you need one, use a manual
+          # `inputs.version` override and the workflow will reject it here -- by
+          # design.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Computed version '${VERSION}' must be final semver X.Y.Z (no prerelease suffix)."
             exit 1
           fi
 
@@ -156,6 +176,10 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_run == 'true'
     runs-on: windows-latest
+    # Prevent Mode A/B/C runs from racing each other for the same version.
+    concurrency:
+      group: win-release-${{ github.repository }}-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
     permissions:
       contents: write       # create releases, push tag annotations if needed
       id-token: write       # Azure OIDC federation
@@ -165,8 +189,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Pin internal composite actions to EXACTLY the toolkit SHA this reusable
+      # workflow was loaded at. Without this step, internal composites would
+      # resolve from `@main`, defeating the consumer's `@v1` pin.
+      - name: Checkout toolkit at matching ref
+        uses: actions/checkout@v4
+        with:
+          repository: ReboundMan/ReboundMan-ReleaseToolkit
+          ref: ${{ github.workflow_sha }}
+          path: _toolkit
+          fetch-depth: 1
+
       - name: Setup Windows build toolchain
-        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/setup-windows-build@main
+        uses: ./_toolkit/.github/actions/setup-windows-build
         with:
           web_bundle: ${{ inputs.web_bundle }}
 
@@ -175,10 +210,15 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           ISS_PATH: ${{ inputs.inno_script }}
+          CSPROJ_PATH: ${{ inputs.csproj_path }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           # --- Stamp .iss MyAppVersion
+          # NOTE: The .iss script MUST contain a line of the literal shape
+          #   #define MyAppVersion "1.4.1"
+          # at the start of a line (leading whitespace not supported), double-
+          # quoted. If the shape differs, stamping fails fast.
           if (-not (Test-Path $env:ISS_PATH)) { throw "Inno script not found: $env:ISS_PATH" }
           $content = Get-Content $env:ISS_PATH -Raw
           $pattern = '(?m)^(#define\s+MyAppVersion\s+)"[^"]*"'
@@ -189,8 +229,17 @@ jobs:
           Set-Content -Path $env:ISS_PATH -Value $newContent -NoNewline
           Write-Host "Stamped $env:ISS_PATH -> MyAppVersion=$env:VERSION"
 
-          # --- Stamp <Version> in every .csproj (best-effort; XML-aware).
-          $csprojs = Get-ChildItem -Recurse -Filter *.csproj -ErrorAction SilentlyContinue
+          # --- Stamp <Version> in csproj(s).
+          # If csproj_path input is given, stamp only that one. Otherwise fall
+          # back to legacy recursive behavior (touches every .csproj including
+          # tests/tools, which can be surprising in multi-project repos).
+          if ($env:CSPROJ_PATH) {
+            if (-not (Test-Path $env:CSPROJ_PATH)) { throw "csproj_path not found: $env:CSPROJ_PATH" }
+            $csprojs = @(Get-Item $env:CSPROJ_PATH)
+          } else {
+            $csprojs = Get-ChildItem -Recurse -Filter *.csproj -ErrorAction SilentlyContinue
+            Write-Host "::warning::csproj_path not set; stamping all .csproj recursively. Set csproj_path input to limit scope."
+          }
           foreach ($f in $csprojs) {
             try {
               [xml]$xml = Get-Content $f.FullName
@@ -227,7 +276,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign primary executable
-        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/azure-trusted-signing@main
+        uses: ./_toolkit/.github/actions/azure-trusted-signing
         with:
           endpoint:     ${{ secrets.TRUSTED_SIGNING_ACCOUNT_URI }}
           account_name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT_NAME }}
@@ -237,7 +286,7 @@ jobs:
           description:  '${{ inputs.app_name }} v${{ needs.prepare.outputs.version }}'
 
       - name: Compile installer (Inno Setup)
-        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/inno-compile@main
+        uses: ./_toolkit/.github/actions/inno-compile
         with:
           script: ${{ inputs.inno_script }}
 
@@ -248,24 +297,25 @@ jobs:
           INSTALLER_GLOB: ${{ inputs.installer_glob }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $matches = Get-ChildItem -Path . -Recurse -Include (Split-Path $env:INSTALLER_GLOB -Leaf)
+          # Use the FULL glob (directory + leaf pattern). Earlier versions
+          # stripped the directory and recursive-searched the whole repo, which
+          # could pick a stale installer from a previous run.
+          $matches = @(Get-Item -Path $env:INSTALLER_GLOB -ErrorAction SilentlyContinue)
           if (-not $matches -or $matches.Count -eq 0) {
-            throw "No installer matched '$env:INSTALLER_GLOB' under repo root."
+            throw "No installer matched '$env:INSTALLER_GLOB' (resolved relative to $(Get-Location))."
           }
           if ($matches.Count -gt 1) {
-            Write-Warning "Multiple installers matched; using the most recent."
+            Write-Warning "Multiple installers matched '$env:INSTALLER_GLOB'; using the most recent."
             $matches = $matches | Sort-Object LastWriteTime -Descending
           }
           $installer = $matches[0]
-          $folder = $installer.DirectoryName
-          $name = $installer.Name
           "installer_path=$($installer.FullName)" | Out-File -Append $env:GITHUB_OUTPUT
-          "installer_folder=$folder"              | Out-File -Append $env:GITHUB_OUTPUT
-          "installer_name=$name"                  | Out-File -Append $env:GITHUB_OUTPUT
+          "installer_folder=$($installer.DirectoryName)" | Out-File -Append $env:GITHUB_OUTPUT
+          "installer_name=$($installer.Name)" | Out-File -Append $env:GITHUB_OUTPUT
           Write-Host "Located installer: $($installer.FullName)"
 
       - name: Sign installer
-        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/azure-trusted-signing@main
+        uses: ./_toolkit/.github/actions/azure-trusted-signing
         with:
           endpoint:     ${{ secrets.TRUSTED_SIGNING_ACCOUNT_URI }}
           account_name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT_NAME }}
@@ -290,7 +340,7 @@ jobs:
 
       - name: Generate release notes
         id: notes
-        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/generate-release-notes@main
+        uses: ./_toolkit/.github/actions/generate-release-notes
         with:
           version:  ${{ needs.prepare.outputs.version }}
           last_tag: ${{ needs.prepare.outputs.last_tag }}
@@ -312,18 +362,35 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = "v$env:VERSION"
           $title = "$env:APP_NAME v$env:VERSION"
+          $owner = $env:GITHUB_REPOSITORY
+
+          # Idempotent draft: delete any prior draft for this tag so Mode B
+          # weekly runs don't accumulate orphans. (Real published releases for
+          # the tag are NEVER deleted -- we filter on draft == true.)
+          if ($env:RELEASE_MODE -eq 'draft') {
+            $existing = gh api "repos/$owner/releases" --paginate | ConvertFrom-Json
+            $priors = @($existing | Where-Object { $_.tag_name -eq $tag -and $_.draft -eq $true })
+            foreach ($p in $priors) {
+              Write-Host "Deleting prior draft (id=$($p.id), name=$($p.name)) for tag $tag"
+              gh api -X DELETE "repos/$owner/releases/$($p.id)" | Out-Null
+            }
+          }
 
           $args = @(
             'release', 'create', $tag,
             $env:INSTALLER, $env:SHA_FILE,
             '--title', $title,
+            # --target pins the release to the commit we actually built from,
+            # so a race with main HEAD movement during the build can't ship a
+            # tag pointing at the wrong commit.
+            '--target', $env:GITHUB_SHA,
             '--notes-file', $env:NOTES_FILE
           )
           if ($env:RELEASE_MODE -eq 'draft') { $args += '--draft' }
 
-          # If the tag already exists (Mode C), `gh release create` will use it.
-          # If not (Modes A/B drafts), `gh release create` creates the tag from
-          # HEAD when the release is published. Draft releases don't create the
-          # tag until publish, which is the desired behavior.
+          # Mode C (push tag): the tag already exists at GITHUB_SHA, so --target
+          # is redundant but harmless.
+          # Modes A/B: gh creates the tag only when the draft is published;
+          # while the release is a draft, no git ref exists yet.
           Write-Host "gh $($args -join ' ')"
           & gh @args

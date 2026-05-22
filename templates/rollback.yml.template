@@ -1,0 +1,35 @@
+# Copy this file to .github/workflows/rollback.yml in your app's repo.
+# Use SPARINGLY -- forward fix is almost always the better answer.
+# See ReboundMan-ReleaseToolkit/PLAN.md §13 for the rollback design.
+
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to yank, e.g. "1.4.2" (no v prefix)'
+        required: true
+        type: string
+      reason:
+        description: 'Short human reason. Goes into the yank banner on the release.'
+        required: false
+        type: string
+        default: ''
+      delete_tag:
+        description: 'Also delete the git tag (rare; rewrites tag history)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # edit releases, push tag deletion
+  issues: write     # open the tracking issue
+
+jobs:
+  rollback:
+    uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/workflows/win-app-rollback.yml@v1
+    with:
+      version:    ${{ inputs.version }}
+      reason:     ${{ inputs.reason }}
+      delete_tag: ${{ inputs.delete_tag }}

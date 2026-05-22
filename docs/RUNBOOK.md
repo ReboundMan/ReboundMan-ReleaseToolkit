@@ -66,7 +66,9 @@ Workflow runs end-to-end and **publishes** within ~10 min. No draft step. Use fo
 ### Yanking a bad release
 
 ```bash
-gh workflow run win-app-rollback.yml -R ReboundMan/ReboundMan-WordMD \
+# In your app repo (rollback.yml is a thin consumer stub of the toolkit's
+# win-app-rollback.yml reusable workflow -- see templates/rollback.yml.template).
+gh workflow run rollback.yml -R ReboundMan/ReboundMan-WordMD \
   -f version=1.4.2 \
   -f reason="Crash on file open with non-ASCII filenames"
 ```
@@ -83,7 +85,7 @@ The release page stays accessible (anyone with the URL can still download the `S
 If you also need `git describe` to skip the yanked version:
 
 ```bash
-gh workflow run win-app-rollback.yml -R ReboundMan/ReboundMan-WordMD \
+gh workflow run rollback.yml -R ReboundMan/ReboundMan-WordMD \
   -f version=1.4.2 \
   -f reason="..." \
   -f delete_tag=true
@@ -106,6 +108,12 @@ gh workflow run win-app-rollback.yml -R ReboundMan/ReboundMan-WordMD \
 - **Skip one week:** ignore the draft (or delete it). Done.
 - **Pause cron for a month:** comment out the `schedule:` block in `.github/workflows/release.yml` of the affected app, push, set a calendar reminder.
 - **Disable an app's release pipeline entirely:** Actions tab → Workflows → `Release` → `⋯` → Disable workflow.
+
+> **Dormant repo gotcha:** GitHub auto-disables scheduled workflows in repos
+> with **no activity for 60 days**. If your weekly cron stops firing for an
+> app that's been quiet, go to Actions tab → Workflows → `Release` → see if
+> it's been disabled, and click "Enable workflow." A single push to the repo
+> resets the 60-day clock.
 
 ---
 

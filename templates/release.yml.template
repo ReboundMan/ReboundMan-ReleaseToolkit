@@ -48,6 +48,9 @@ jobs:
       # --- OPTIONAL ---
       web_bundle:         false   # true if your build needs `npm run build` (e.g. WordMD)
       version:            ${{ inputs.version }}
+      # Optional but recommended: scope <Version> stamping to your one csproj
+      # instead of recursively touching every .csproj in the repo.
+      # csproj_path:        src/MyApp/MyApp.csproj
 
       # --- DON'T TOUCH unless you know what you're doing ---
       release_mode: ${{ github.event_name == 'push' && 'publish' || 'draft' }}
