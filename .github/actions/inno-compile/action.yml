@@ -1,0 +1,42 @@
+name: 'Compile Inno Setup installer'
+description: 'Runs ISCC.exe against a .iss script. Assumes Inno Setup is on PATH (use setup-windows-build first).'
+
+inputs:
+  script:
+    description: 'Path to the .iss script'
+    required: true
+  defines:
+    description: 'Optional space-separated /D<name>=<value> overrides for the script'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Compile installer
+      shell: pwsh
+      env:
+        SCRIPT: ${{ inputs.script }}
+        DEFINES: ${{ inputs.defines }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (-not (Test-Path $env:SCRIPT)) { throw "Inno script not found: $env:SCRIPT" }
+
+        $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue)?.Source
+        if (-not $iscc) {
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+        }
+        if (-not (Test-Path $iscc)) {
+          throw "ISCC.exe not found. Did you run setup-windows-build first?"
+        }
+
+        $args = @('/Qp')   # Quiet, with progress
+        if ($env:DEFINES) {
+          foreach ($d in $env:DEFINES.Split(' ')) { if ($d) { $args += $d } }
+        }
+        $args += $env:SCRIPT
+
+        Write-Host "Running: $iscc $($args -join ' ')"
+        & $iscc @args
+        if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
+        Write-Host "Installer compiled successfully."

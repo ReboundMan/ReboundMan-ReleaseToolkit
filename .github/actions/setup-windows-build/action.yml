@@ -1,0 +1,54 @@
+name: 'Setup Windows build toolchain'
+description: 'Installs .NET 8 SDK, optional Node 18, and Inno Setup 6 on a windows-latest runner.'
+
+inputs:
+  web_bundle:
+    description: 'If true, installs Node 18 for npm-based web bundle builds.'
+    required: false
+    default: 'false'
+  dotnet_version:
+    description: '.NET SDK version'
+    required: false
+    default: '8.0.x'
+  node_version:
+    description: 'Node.js version (only used if web_bundle=true)'
+    required: false
+    default: '18.x'
+  inno_setup_version:
+    description: 'Inno Setup chocolatey package version (empty = latest)'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet_version }}
+
+    - name: Setup Node.js
+      if: inputs.web_bundle == 'true'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+
+    - name: Install Inno Setup 6
+      shell: pwsh
+      env:
+        ISS_VERSION: ${{ inputs.inno_setup_version }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # windows-latest may already have Inno Setup; check first.
+        $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+        if (Test-Path $iscc) {
+          Write-Host "Inno Setup already installed at $iscc"
+        } else {
+          $args = @('install', 'innosetup', '-y', '--no-progress', '--limit-output')
+          if ($env:ISS_VERSION) { $args += '--version'; $args += $env:ISS_VERSION }
+          choco @args
+        }
+        # Add to PATH so ISCC.exe is callable by name in later steps.
+        $isccDir = Split-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+        echo "$isccDir" | Out-File -FilePath $env:GITHUB_PATH -Append
+        Write-Host "Inno Setup verified."

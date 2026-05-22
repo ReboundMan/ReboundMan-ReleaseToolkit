@@ -1,0 +1,63 @@
+name: 'Azure Trusted Signing'
+description: 'Signs Windows binaries using Azure Trusted Signing via OIDC. Assumes azure/login has already run.'
+
+inputs:
+  endpoint:
+    description: 'Trusted Signing endpoint URI, e.g. https://eus.codesigning.azure.net'
+    required: true
+  account_name:
+    description: 'Trusted Signing account name'
+    required: true
+  profile_name:
+    description: 'Certificate profile name (must be public-trust type)'
+    required: true
+  files_folder:
+    description: 'Folder containing files to sign'
+    required: true
+  files_glob:
+    description: 'Glob for files to sign within files_folder (e.g. "WordMD.exe" or "*.exe")'
+    required: true
+  description:
+    description: 'Signature description (shown in cert details)'
+    required: false
+    default: ''
+  description_url:
+    description: 'Signature URL (shown in cert details)'
+    required: false
+    default: 'https://github.com/ReboundMan'
+
+runs:
+  using: composite
+  steps:
+    - name: Sign with Azure Trusted Signing
+      uses: azure/trusted-signing-action@v0.5.1
+      with:
+        endpoint:                       ${{ inputs.endpoint }}
+        trusted-signing-account-name:   ${{ inputs.account_name }}
+        certificate-profile-name:       ${{ inputs.profile_name }}
+        files-folder:                   ${{ inputs.files_folder }}
+        files-folder-filter:            ${{ inputs.files_glob }}
+        file-digest:                    SHA256
+        timestamp-rfc3161:              http://timestamp.acs.microsoft.com
+        timestamp-digest:               SHA256
+        description:                    ${{ inputs.description }}
+        description-url:                ${{ inputs.description_url }}
+
+    - name: Verify signature
+      shell: pwsh
+      env:
+        FOLDER: ${{ inputs.files_folder }}
+        GLOB: ${{ inputs.files_glob }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $signed = Get-ChildItem -Path $env:FOLDER -Filter $env:GLOB -ErrorAction SilentlyContinue
+        if (-not $signed) {
+          throw "Verification: no files matched $env:FOLDER\$env:GLOB after signing."
+        }
+        foreach ($f in $signed) {
+          $sig = Get-AuthenticodeSignature $f.FullName
+          if ($sig.Status -ne 'Valid') {
+            throw "Verification failed for $($f.FullName): $($sig.Status) -- $($sig.StatusMessage)"
+          }
+          Write-Host "OK: $($f.Name) signed by $($sig.SignerCertificate.Subject)"
+        }

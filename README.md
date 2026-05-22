@@ -6,44 +6,48 @@
 
 ## Status
 
-🚧 **Phase 0 in progress.** See [`PLAN.md`](./PLAN.md) for the full
-architecture. Azure Trusted Signing setup runbook is intentionally kept
-private (`docs/private/SIGNING.md`, gitignored) — ping the maintainer for
-access.
+🚧 **Phase 0 + Phase 1 drafted.** Reusable workflow + composite actions + rollback workflow are implemented and YAML-validated. Pilot against WordMD pending two human-only blockers:
 
-**Decisions locked:**
-- Repo name: `ReboundMan/ReboundMan-ReleaseToolkit` (public)
-- Signing: Azure Trusted Signing via federated OIDC
-- Schedule: `0 6 * * 6` (Sat 06:00 UTC = Fri 11pm PDT)
-- Versioning: git tags as single source of truth
-- Conventional commits: encouraged, never enforced
-- Rollback: yank-via-workflow + forward-fix philosophy (see PLAN §13)
+1. Azure Trusted Signing identity validation (1–3 day Microsoft wait — start at any time)
+2. Org-level GitHub secrets in `ReboundMan` org settings
 
-**Still pending (Phase 0 human-only steps):**
-- [ ] Choose Azure subscription (MSDN vs PAYGO)
-- [ ] Choose publisher identity name on cert
-- [ ] Complete Azure Trusted Signing identity validation (1–3 day Microsoft wait)
-- [ ] Drop org-level GitHub secrets in `ReboundMan` org settings
+Once both are done, **tag this repo `v1.0.0`** and onboard the WordMD pilot per [`docs/ONBOARDING.md`](./docs/ONBOARDING.md).
 
-## What this repo will contain (once Phase 1 lands)
+**Decisions locked:** see [`PLAN.md`](./PLAN.md) §7.
+
+**Implemented (this repo):**
+- `.github/workflows/win-app-release.yml` — reusable release workflow (Modes A/B/C)
+- `.github/workflows/win-app-rollback.yml` — reusable yank workflow (Flavor A in PLAN §13)
+- `.github/actions/setup-windows-build/` — .NET + optional Node + Inno Setup
+- `.github/actions/azure-trusted-signing/` — wraps `azure/trusted-signing-action` + verifies signatures post-sign
+- `.github/actions/inno-compile/` — ISCC.exe wrapper
+- `.github/actions/generate-release-notes/` — Conventional Commits → grouped Markdown changelog
+- `templates/release.yml.template` — drop-in stub for new app repos
+- `CONTRIBUTING.md` — commit-message conventions
+
+**Private (gitignored, ask the maintainer):**
+- `docs/private/SIGNING.md` — Azure Trusted Signing setup runbook
+
+## What this repo contains
 
 ```
 .github/
   workflows/
     win-app-release.yml         ← reusable workflow consumed by app repos
+    win-app-rollback.yml        ← reusable yank workflow (see PLAN §13)
   actions/
     setup-windows-build/        ← .NET + Node + Inno Setup
     azure-trusted-signing/      ← signtool wrapper for Azure Trusted Signing
     inno-compile/               ← ISCC.exe invocation
     generate-release-notes/     ← changelog from PRs/commits since last tag
-    winget-pr/                  ← (Phase 5) winget-pkgs manifest PR
 docs/
   ONBOARDING.md                 ← how to wire a new app into the toolkit
-  SIGNING.md                    ← Azure Trusted Signing setup runbook (PRIVATE — gitignored, lives at docs/private/SIGNING.md)
   RUNBOOK.md                    ← what life looks like week-to-week
+  private/                      ← gitignored: SIGNING.md and other ops detail
 templates/
   release.yml.template          ← copy-paste stub for new app repos
-PLAN.md                         ← architecture + phased rollout
+PLAN.md                         ← architecture + phased rollout + rollback design
+CONTRIBUTING.md                 ← commit message conventions
 README.md                       ← (this file)
 LICENSE                         ← MIT
 ```

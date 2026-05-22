@@ -1,0 +1,129 @@
+name: Reusable — Windows app rollback
+
+# Yanks a published release. Use SPARINGLY -- forward fix is almost always
+# the better answer (see PLAN.md §13).
+#
+# This workflow:
+#   1. Re-flags the release as draft (drops it from "Latest" + public listing)
+#   2. Prepends a ⚠️ YANKED banner to the release body
+#   3. Optionally deletes the git tag
+#   4. Opens a tracking issue
+#
+# Consumer's stub:
+#
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         version:    { required: true,  type: string }
+#         reason:     { required: false, type: string }
+#         delete_tag: { required: false, type: boolean, default: false }
+#   jobs:
+#     rollback:
+#       uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/workflows/win-app-rollback.yml@v1
+#       with:
+#         version:    ${{ inputs.version }}
+#         reason:     ${{ inputs.reason }}
+#         delete_tag: ${{ inputs.delete_tag }}
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+        description: 'Version to yank, e.g. "1.4.2" (no v prefix).'
+      reason:
+        required: false
+        type: string
+        default: ''
+        description: 'Short human reason. Goes into the yank banner.'
+      delete_tag:
+        required: false
+        type: boolean
+        default: false
+        description: 'Also delete the git tag. Rewrites tag history -- be careful.'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Yank the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REASON: ${{ inputs.reason }}
+          DELETE_TAG: ${{ inputs.delete_tag }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          DATE="$(date -u +%Y-%m-%d)"
+
+          # 1. Verify the release exists.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG does not exist. Nothing to yank."
+            exit 1
+          fi
+
+          # 2. Capture current body so we can prepend the banner.
+          CURRENT_BODY="$(gh release view "$TAG" --json body --jq .body)"
+          REASON_TXT="${REASON:-No reason provided.}"
+          BANNER="> ⚠️ **YANKED on ${DATE}** — ${REASON_TXT}
+          >
+          > Do not install this version. See the next release for the fix.
+          >
+          > _Yanked by workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}_
+
+          ---
+
+          "
+
+          NEW_BODY="${BANNER}${CURRENT_BODY}"
+
+          # 3. Re-flag as draft + update body.
+          echo "::group::Yanking $TAG"
+          gh release edit "$TAG" --draft=true
+          # gh release edit requires the body via --notes which replaces it.
+          printf '%s' "$NEW_BODY" | gh release edit "$TAG" --notes-file -
+          echo "::endgroup::"
+
+          echo "Release $TAG is now a draft with a yank banner."
+
+          # 4. Optionally delete the tag.
+          if [ "$DELETE_TAG" = "true" ]; then
+            echo "::warning::Deleting tag $TAG (delete_tag=true)."
+            git push origin --delete "$TAG" || echo "::warning::Tag delete failed (may already be gone)."
+          fi
+
+          # 5. Open a tracking issue.
+          ISSUE_BODY="Rollback executed via workflow on ${DATE}.
+
+          - **Version:** ${TAG}
+          - **Reason:** ${REASON_TXT}
+          - **Tag deleted:** ${DELETE_TAG}
+          - **Release page:** ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}
+          - **Workflow run:** ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          ## Next steps
+
+          - [ ] Identify the root cause
+          - [ ] Land the fix on \`main\`
+          - [ ] Tag \`v$(echo "$VERSION" | awk -F. '{print $1"."$2"."$3+1}')\` to ship the forward fix
+          - [ ] Close this issue with a link to the new release"
+
+          gh issue create \
+            --title "Rollback: ${TAG}" \
+            --body "$ISSUE_BODY" \
+            --label "rollback" 2>/dev/null || \
+          gh issue create \
+            --title "Rollback: ${TAG}" \
+            --body "$ISSUE_BODY"
+
+          echo "::notice::Rollback complete. Tracking issue opened."

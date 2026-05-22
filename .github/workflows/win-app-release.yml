@@ -1,0 +1,329 @@
+name: Reusable — Windows app release
+
+# The heart of the toolkit. Called by each app's .github/workflows/release.yml.
+# Supports three trigger modes from the consumer side:
+#   A) workflow_dispatch  -> draft release
+#   B) schedule (cron)    -> draft release IF commits since last tag
+#   C) push tag v*        -> published release
+#
+# Version is determined as follows (first match wins):
+#   1. inputs.version (explicit override)
+#   2. The pushed tag, if event_name=push and ref starts with refs/tags/v
+#   3. Next patch from `git describe --tags --abbrev=0`
+#
+# Two signing operations:
+#   1. Sign the primary .exe inside the publish output dir
+#   2. Compile installer (which packs the now-signed exe)
+#   3. Sign the resulting installer
+#
+# Release notes are auto-generated from commits + merged PRs since the last
+# tag, grouped by Conventional Commits prefix. Unprefixed commits land under
+# "Other". No enforcement; encouragement only.
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        required: true
+        type: string
+        description: 'Display name, e.g. "WordMD". Used in release title.'
+      publish_command:
+        required: true
+        type: string
+        description: 'Exact shell command that produces a self-contained build.'
+      publish_output_dir:
+        required: true
+        type: string
+        description: 'Directory where publish_command writes its output.'
+      inno_script:
+        required: true
+        type: string
+        description: 'Path to the .iss file (relative to repo root).'
+      primary_exe:
+        required: true
+        type: string
+        description: 'Filename of the main exe to sign, e.g. "WordMD.exe".'
+      installer_glob:
+        required: true
+        type: string
+        description: 'Glob matching the installer output, e.g. "dist/*Setup*.exe".'
+      web_bundle:
+        required: false
+        type: boolean
+        default: false
+        description: 'true if the build needs `npm install && npm run build` first.'
+      version:
+        required: false
+        type: string
+        default: ''
+        description: 'Explicit version override (e.g. "1.4.2"). Default = computed.'
+      release_mode:
+        required: true
+        type: string
+        description: 'Either "draft" or "publish".'
+    secrets:
+      AZURE_TENANT_ID:             { required: true }
+      AZURE_CLIENT_ID:             { required: true }
+      AZURE_SUBSCRIPTION_ID:       { required: true }
+      TRUSTED_SIGNING_ACCOUNT_URI: { required: true }
+      TRUSTED_SIGNING_ACCOUNT_NAME: { required: true }
+      TRUSTED_SIGNING_PROFILE_NAME: { required: true }
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Decide whether to run + compute the version.
+  # Runs on Linux (cheap, fast). Outputs feed the heavy Windows build job.
+  # For the schedule trigger, exits with should_run=false if no commits exist
+  # since the last tag -- this is how Mode B "skip-week" works.
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      version: ${{ steps.decide.outputs.version }}
+      last_tag: ${{ steps.decide.outputs.last_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history + tags
+
+      - id: decide
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          echo "last_tag=${LAST_TAG}" >> "$GITHUB_OUTPUT"
+
+          # --- Schedule trigger: short-circuit if no commits since last tag.
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            if [ -n "$LAST_TAG" ]; then
+              COMMITS_SINCE=$(git rev-list --count "${LAST_TAG}..HEAD")
+              if [ "$COMMITS_SINCE" = "0" ]; then
+                echo "::notice::Scheduled run: no commits since ${LAST_TAG}; skipping."
+                echo "should_run=false" >> "$GITHUB_OUTPUT"
+                echo "version=" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::notice::Scheduled run: ${COMMITS_SINCE} commit(s) since ${LAST_TAG}; proceeding."
+            fi
+          fi
+
+          # --- Determine version (first match wins).
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+            echo "::notice::Version source: workflow input -> ${VERSION}"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "::notice::Version source: pushed tag -> ${VERSION}"
+          else
+            # Compute next patch from last tag (e.g. v1.4.1 -> 1.4.2).
+            BASE="${LAST_TAG#v}"
+            if [ -z "$BASE" ]; then BASE="0.0.0"; fi
+            IFS='.' read -ra PARTS <<< "$BASE"
+            MAJOR="${PARTS[0]:-0}"
+            MINOR="${PARTS[1]:-0}"
+            PATCH="${PARTS[2]:-0}"
+            VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+            echo "::notice::Version source: next-patch from ${LAST_TAG:-v0.0.0} -> ${VERSION}"
+          fi
+
+          # Sanity: must look like semver.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]]; then
+            echo "::error::Computed version '${VERSION}' doesn't look like semver."
+            exit 1
+          fi
+
+          # Mode C strictness: if push:tag, the tag must equal v$VERSION.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            EXPECTED="refs/tags/v${VERSION}"
+            if [ "$GITHUB_REF" != "$EXPECTED" ]; then
+              echo "::error::Mode C: pushed ref ${GITHUB_REF} doesn't match expected ${EXPECTED}."
+              exit 1
+            fi
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build, sign, package, release. Windows runner. Only runs if prepare
+  # decided we have work to do.
+  # ---------------------------------------------------------------------------
+  release:
+    needs: prepare
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write       # create releases, push tag annotations if needed
+      id-token: write       # Azure OIDC federation
+      pull-requests: read   # release-notes PR discovery
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Windows build toolchain
+        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/setup-windows-build@main
+        with:
+          web_bundle: ${{ inputs.web_bundle }}
+
+      - name: Stamp version into .iss and .csproj
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ISS_PATH: ${{ inputs.inno_script }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # --- Stamp .iss MyAppVersion
+          if (-not (Test-Path $env:ISS_PATH)) { throw "Inno script not found: $env:ISS_PATH" }
+          $content = Get-Content $env:ISS_PATH -Raw
+          $pattern = '(?m)^(#define\s+MyAppVersion\s+)"[^"]*"'
+          if ($content -notmatch $pattern) {
+            throw "Couldn't find '#define MyAppVersion ""..."" line in $env:ISS_PATH"
+          }
+          $newContent = $content -replace $pattern, "`$1`"$env:VERSION`""
+          Set-Content -Path $env:ISS_PATH -Value $newContent -NoNewline
+          Write-Host "Stamped $env:ISS_PATH -> MyAppVersion=$env:VERSION"
+
+          # --- Stamp <Version> in every .csproj (best-effort; XML-aware).
+          $csprojs = Get-ChildItem -Recurse -Filter *.csproj -ErrorAction SilentlyContinue
+          foreach ($f in $csprojs) {
+            try {
+              [xml]$xml = Get-Content $f.FullName
+              $pg = $xml.SelectSingleNode("//PropertyGroup[1]")
+              if (-not $pg) { continue }
+              $vNode = $pg.SelectSingleNode("Version")
+              if ($vNode) {
+                $vNode.InnerText = $env:VERSION
+              } else {
+                $vNode = $xml.CreateElement("Version")
+                $vNode.InnerText = $env:VERSION
+                $pg.AppendChild($vNode) | Out-Null
+              }
+              $xml.Save($f.FullName)
+              Write-Host "Stamped $($f.FullName) -> <Version>$env:VERSION</Version>"
+            } catch {
+              Write-Warning "Could not stamp $($f.FullName): $_"
+            }
+          }
+
+      - name: Build (publish_command)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "::group::Running publish_command"
+          ${{ inputs.publish_command }}
+          Write-Host "::endgroup::"
+
+      - name: Azure login (OIDC federation)
+        uses: azure/login@v2
+        with:
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign primary executable
+        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/azure-trusted-signing@main
+        with:
+          endpoint:     ${{ secrets.TRUSTED_SIGNING_ACCOUNT_URI }}
+          account_name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT_NAME }}
+          profile_name: ${{ secrets.TRUSTED_SIGNING_PROFILE_NAME }}
+          files_folder: ${{ inputs.publish_output_dir }}
+          files_glob:   ${{ inputs.primary_exe }}
+          description:  '${{ inputs.app_name }} v${{ needs.prepare.outputs.version }}'
+
+      - name: Compile installer (Inno Setup)
+        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/inno-compile@main
+        with:
+          script: ${{ inputs.inno_script }}
+
+      - name: Locate installer artifact
+        id: locate
+        shell: pwsh
+        env:
+          INSTALLER_GLOB: ${{ inputs.installer_glob }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $matches = Get-ChildItem -Path . -Recurse -Include (Split-Path $env:INSTALLER_GLOB -Leaf)
+          if (-not $matches -or $matches.Count -eq 0) {
+            throw "No installer matched '$env:INSTALLER_GLOB' under repo root."
+          }
+          if ($matches.Count -gt 1) {
+            Write-Warning "Multiple installers matched; using the most recent."
+            $matches = $matches | Sort-Object LastWriteTime -Descending
+          }
+          $installer = $matches[0]
+          $folder = $installer.DirectoryName
+          $name = $installer.Name
+          "installer_path=$($installer.FullName)" | Out-File -Append $env:GITHUB_OUTPUT
+          "installer_folder=$folder"              | Out-File -Append $env:GITHUB_OUTPUT
+          "installer_name=$name"                  | Out-File -Append $env:GITHUB_OUTPUT
+          Write-Host "Located installer: $($installer.FullName)"
+
+      - name: Sign installer
+        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/azure-trusted-signing@main
+        with:
+          endpoint:     ${{ secrets.TRUSTED_SIGNING_ACCOUNT_URI }}
+          account_name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT_NAME }}
+          profile_name: ${{ secrets.TRUSTED_SIGNING_PROFILE_NAME }}
+          files_folder: ${{ steps.locate.outputs.installer_folder }}
+          files_glob:   ${{ steps.locate.outputs.installer_name }}
+          description:  '${{ inputs.app_name }} Setup v${{ needs.prepare.outputs.version }}'
+
+      - name: Compute SHA256 checksum
+        id: hash
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.locate.outputs.installer_path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hash = (Get-FileHash $env:INSTALLER -Algorithm SHA256).Hash.ToLower()
+          $name = Split-Path $env:INSTALLER -Leaf
+          $shaFile = "$env:INSTALLER.sha256"
+          "$hash  $name" | Set-Content $shaFile
+          "sha_path=$shaFile" | Out-File -Append $env:GITHUB_OUTPUT
+          Write-Host "SHA256: $hash"
+
+      - name: Generate release notes
+        id: notes
+        uses: ReboundMan/ReboundMan-ReleaseToolkit/.github/actions/generate-release-notes@main
+        with:
+          version:  ${{ needs.prepare.outputs.version }}
+          last_tag: ${{ needs.prepare.outputs.last_tag }}
+          app_name: ${{ inputs.app_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          APP_NAME: ${{ inputs.app_name }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_path }}
+          INSTALLER: ${{ steps.locate.outputs.installer_path }}
+          SHA_FILE: ${{ steps.hash.outputs.sha_path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "v$env:VERSION"
+          $title = "$env:APP_NAME v$env:VERSION"
+
+          $args = @(
+            'release', 'create', $tag,
+            $env:INSTALLER, $env:SHA_FILE,
+            '--title', $title,
+            '--notes-file', $env:NOTES_FILE
+          )
+          if ($env:RELEASE_MODE -eq 'draft') { $args += '--draft' }
+
+          # If the tag already exists (Mode C), `gh release create` will use it.
+          # If not (Modes A/B drafts), `gh release create` creates the tag from
+          # HEAD when the release is published. Draft releases don't create the
+          # tag until publish, which is the desired behavior.
+          Write-Host "gh $($args -join ' ')"
+          & gh @args
