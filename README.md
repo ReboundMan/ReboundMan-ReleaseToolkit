@@ -1,4 +1,52 @@
+<!-- ========================================================================
+     RESUME HERE — paste this prompt to any agent to get back up to speed
+     ========================================================================
+     > Resume the ReboundMan code-signing / release-automation effort. Read
+     > README.md (Status section), PLAN.md, and docs/private/SIGNING.md in this
+     > repo (C:\Users\jeffjame\OneDrive\Code\ReboundMan-ReleaseToolkit). Tell me
+     > the current blocker, what's done, and the exact next step. Context: we are
+     > signing Windows app releases with Azure Trusted Signing (Organization
+     > identity = ReboundMan.com LLC, D-U-N-S 146748726) so installers stop
+     > triggering SmartScreen. Then wait for my go-ahead.
+
+     Where things live (so you never have to search again):
+       - Master plan ............ PLAN.md
+       - Azure signing runbook .. docs/private/SIGNING.md  (gitignored, OneDrive
+                                  may keep it online-only; read its bytes to
+                                  hydrate it before opening)
+       - Onboarding a new app ... docs/ONBOARDING.md
+       - Week-to-week ops ....... docs/RUNBOOK.md
+       - This repo path ......... C:\Users\jeffjame\OneDrive\Code\ReboundMan-ReleaseToolkit
+======================================================================== -->
+
 # ReboundMan Release Toolkit
+
+## ▶️ Resume here (read this first)
+
+**To get back up to speed next session, paste this prompt to the agent:**
+
+```text
+Resume the ReboundMan code-signing / release-automation effort. Read README.md
+(Status section), PLAN.md, and docs/private/SIGNING.md in this repo
+(C:\Users\jeffjame\OneDrive\Code\ReboundMan-ReleaseToolkit). Tell me the current
+blocker, what's done, and the exact next step. Context: we sign Windows app
+releases with Azure Trusted Signing (Organization identity = ReboundMan.com LLC,
+D-U-N-S 146748726) so installers stop triggering SmartScreen. Then wait for my
+go-ahead.
+```
+
+**Where everything lives (no more searching):**
+
+| What | File |
+|---|---|
+| Master plan + locked decisions | [`PLAN.md`](./PLAN.md) |
+| Azure Trusted Signing runbook | [`docs/private/SIGNING.md`](./docs/private/SIGNING.md) (gitignored; OneDrive may keep it online-only, read its bytes to hydrate before opening) |
+| Onboarding a new app | [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) |
+| Week-to-week operations | [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) |
+
+**One-line state:** Azure Trusted Signing **Organization** validation **resubmitted 2026-06-16** for `ReboundMan.com LLC` (D-U-N-S `146748726`) after a first failure; fixes applied: requester name `Jeff` → `Jeffrey` (match govt ID) + D&B recheck. Awaiting result. When it flips to **Completed**, resume at [`SIGNING.md`](./docs/private/SIGNING.md) Step 3 (certificate profile).
+
+---
 
 > Reusable GitHub Actions workflow + composite actions for building, signing,
 > and publishing **ReboundMan** Windows desktop apps (WordMD, Token Tray, and
@@ -8,7 +56,7 @@
 
 🚧 **Phase 0 + Phase 1 drafted.** Reusable workflow + composite actions + rollback workflow are implemented and YAML-validated. Pilot against WordMD pending two human-only blockers:
 
-1. Azure Trusted Signing identity validation (1–3 day Microsoft wait — start at any time)
+1. Azure Trusted Signing **Organization** identity validation — submitted 2026-06-15 for `ReboundMan.com LLC` (D-U-N-S `146748726`); awaiting Dun & Bradstreet approval
 2. Org-level GitHub secrets in `ReboundMan` org settings
 
 Once both are done, **tag this repo `v1.0.0`** and onboard the WordMD pilot per [`docs/ONBOARDING.md`](./docs/ONBOARDING.md).

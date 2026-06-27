@@ -208,12 +208,12 @@ in one command."
 | 7 | Build skip-week mechanism | Just don't publish the draft. Cron exits silently if no commits since last tag. |
 | 8 | Rollback model | Yank-via-workflow (Flavor A) + forward-fix philosophy (Flavor B). See §13. |
 | 9 | "Draft ready" notification | GitHub's default email for v1. Re-evaluate after a few weeks. |
+| 10 | Publisher identity (cert) | **Organization** validation. Legal entity `ReboundMan.com LLC`, D-U-N-S `146748726`, registered `30 N Gould St Ste R, Sheridan, WY 82801`. SmartScreen Publisher line = `ReboundMan.com LLC`. Submitted 2026-06-15; awaiting D&B approval. |
 
 ### Still TBD (do not block planning — decide at execution time)
 | # | Decision | Decide by |
 |---|---|---|
-| 10 | Azure subscription (MSDN vs PAYGO) | When standing up Trusted Signing account (Phase 0 step 1) |
-| 11 | Publisher identity on the cert | When submitting identity validation (Phase 0 step 2) — "ReboundMan" individual recommended for fastest validation |
+| 11 | Azure subscription (MSDN vs PAYGO) | When standing up Trusted Signing account (Phase 0 step 1) |
 
 ### Deferred to later phases
 | # | Decision | Phase |
